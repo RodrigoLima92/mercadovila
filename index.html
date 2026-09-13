@@ -28,6 +28,7 @@
       --credito: #7c3aed;
       --pix: #059669;
       --dinheiro: #d97706;
+      --gerente: #0891b2;
     }
 
     * { box-sizing: border-box; margin: 0; padding: 0; font-family: 'Plus Jakarta Sans', sans-serif; }
@@ -139,6 +140,7 @@
     .user-name { font-weight: 600; font-size: 0.85rem; display: flex; flex-direction: column; line-height: 1.1; }
     .user-name small { font-size: 0.7rem; color: var(--text-muted); font-weight: 500; }
     .user-name small.perfil-admin { color: #7c3aed; }
+    .user-name small.perfil-gerente { color: #0891b2; }
     .user-name small.perfil-caixa { color: #0891b2; }
     .user-name small.perfil-estoque { color: #d97706; }
     .btn-logout { background: transparent; border: none; color: var(--text-muted); cursor: pointer; padding: 6px; border-radius: 6px; display: flex; }
@@ -1260,7 +1262,8 @@
           <div class="form-group">
             <label for="user-perfil">Perfil de Acesso</label>
             <select id="user-perfil" required>
-              <option value="admin">Administrador (acesso total)</option>
+              <option value="admin">Administrador (acesso total + excluir)</option>
+              <option value="gerente">Gerente (vê tudo, sem excluir)</option>
               <option value="caixa">Operador de Caixa (só PDV)</option>
               <option value="estoque">Estoquista (PDV + Estoque + Fornecedores)</option>
             </select>
@@ -1297,17 +1300,7 @@
     const app = initializeApp(firebaseConfig);
     const db = getFirestore(app);
 
-    // Expor globalmente para o script principal usar
-    window.FirebaseDB = {
-      db,
-      doc,
-      getDoc,
-      setDoc,
-      onSnapshot,
-      ready: false
-    };
-
-    // Marca como pronto
+    window.FirebaseDB = { db, doc, getDoc, setDoc, onSnapshot, ready: false };
     window.FirebaseDB.ready = true;
     window.dispatchEvent(new Event('firebase-ready'));
   </script>
@@ -1319,20 +1312,24 @@
     const TAXAS = { debito: 0.012, credito: 0.04, pix: 0.005, dinheiro: 0 };
     const PAGAMENTO_LABELS = { debito: 'Débito', credito: 'Crédito', pix: 'PIX', dinheiro: 'Dinheiro' };
 
-    // ========================================================================
-    // ✅ CORREÇÃO: ADMIN COM TODAS AS PERMISSÕES
-    // O problema era que a lista `permissoes` do admin estava sem 'fornecedores'
-    // quando o setup inicial foi salvo no localStorage. Agora garantimos que
-    // o admin SEMPRE tenha todas as permissões, mesmo se o localStorage estiver
-    // desatualizado.
-    // ========================================================================
+    // ==========================================================================
+    // PERMISSÕES
+    // ==========================================================================
     const TODAS_PERMISSOES = ['pdv', 'estoque', 'fornecedores', 'dashboards', 'usuarios', 'auditoria', 'editar', 'excluir'];
+    // Gerente: pode ver tudo, mas NÃO pode excluir
+    const PERMISSOES_GERENTE = ['pdv', 'estoque', 'fornecedores', 'dashboards', 'usuarios', 'auditoria', 'editar'];
 
     const USUARIOS_PADRAO = {
       'rodrigo': {
         login: 'rodrigo', nome: 'Rodrigo', senhaHash: 'placeholder',
         perfil: 'admin', perfilLabel: 'Administrador', perfilClasse: 'perfil-admin',
         permissoes: [...TODAS_PERMISSOES],
+        criadoEm: new Date().toISOString(), senhaAlteradaEm: new Date().toISOString()
+      },
+      'gerente': {
+        login: 'gerente', nome: 'Gerente', senhaHash: 'placeholder',
+        perfil: 'gerente', perfilLabel: 'Gerente', perfilClasse: 'perfil-gerente',
+        permissoes: [...PERMISSOES_GERENTE],
         criadoEm: new Date().toISOString(), senhaAlteradaEm: new Date().toISOString()
       },
       'caixa': {
@@ -1351,6 +1348,7 @@
 
     const PERFIS = {
       admin: { label: 'Administrador', classe: 'perfil-admin', permissoes: [...TODAS_PERMISSOES] },
+      gerente: { label: 'Gerente', classe: 'perfil-gerente', permissoes: [...PERMISSOES_GERENTE] },
       caixa: { label: 'Operador de Caixa', classe: 'perfil-caixa', permissoes: ['pdv'] },
       estoque: { label: 'Estoquista', classe: 'perfil-estoque', permissoes: ['pdv', 'estoque', 'fornecedores'] }
     };
@@ -1363,13 +1361,11 @@
 
     const AUTH_KEY = 'mercadinho_auth_v3';
     const TENTATIVAS_KEY = 'mercadinho_tentativas_v3';
-    const STORAGE_KEY = 'mercadinho_db_v7';
-    const USUARIOS_KEY = 'mercadinho_usuarios_v4';
+    const STORAGE_KEY = 'mercadinho_db_v8';
+    const USUARIOS_KEY = 'mercadinho_usuarios_v5';
     const LOGS_KEY = 'mercadinho_logs_v3';
-    const SETUP_KEY = 'mercadinho_setup_v4';
-    const FIREBASE_DOC = 'sistema/mercadinho_villaca';
+    const SETUP_KEY = 'mercadinho_setup_v5';
 
-    // Estado padrão inicial
     const STATE_PADRAO = {
       produtos: [
         { id: 1, nome: "Arroz 5kg", codigo: "7891000100101", preco: 28.90, qtd: 15, min: 5, validade: "2026-12-31", tipo: "unidade" },
@@ -1448,7 +1444,7 @@
     }
 
     /* ==========================================================================
-       FIREBASE - SINCRONIZAÇÃO
+       FIREBASE
        ========================================================================== */
     function atualizarStatusFirebase(status, texto) {
       const el = document.getElementById('firebase-status');
@@ -1458,13 +1454,9 @@
       el.className = `firebase-status ${status}`;
       txt.textContent = texto;
       
-      if (status === 'online') {
-        el.querySelector('i').setAttribute('data-lucide', 'cloud');
-      } else if (status === 'syncing') {
-        el.querySelector('i').setAttribute('data-lucide', 'refresh-cw');
-      } else {
-        el.querySelector('i').setAttribute('data-lucide', 'cloud-off');
-      }
+      if (status === 'online') el.querySelector('i').setAttribute('data-lucide', 'cloud');
+      else if (status === 'syncing') el.querySelector('i').setAttribute('data-lucide', 'refresh-cw');
+      else el.querySelector('i').setAttribute('data-lucide', 'cloud-off');
       lucide.createIcons();
     }
 
@@ -1481,18 +1473,14 @@
         const { db, doc, getDoc, setDoc, onSnapshot } = window.FirebaseDB;
         const docRef = doc(db, 'sistema', 'mercadinho_villaca');
         
-        // Tenta carregar dados do Firebase
         const snapshot = await getDoc(docRef);
         
         if (snapshot.exists()) {
           const dadosCloud = snapshot.data();
-          
-          // Compara timestamps para saber qual é mais recente
           const tsLocal = state._lastUpdate || 0;
           const tsCloud = dadosCloud._lastUpdate || 0;
           
           if (tsCloud >= tsLocal) {
-            // Dados da nuvem são mais recentes
             state = {
               produtos: dadosCloud.produtos || [],
               vendas: dadosCloud.vendas || [],
@@ -1502,9 +1490,8 @@
             localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
             atualizarStatusFirebase('online', 'Nuvem sincronizada');
             if (usuarioLogado) render();
-            toast('☁️ Dados carregados', 'Dados sincronizados do Firebase', 'cloud');
+            toast('☁️ Dados carregados', 'Sincronizado do Firebase', 'cloud');
           } else {
-            // Dados locais são mais recentes → envia para a nuvem
             await setDoc(docRef, {
               produtos: state.produtos,
               vendas: state.vendas,
@@ -1514,7 +1501,6 @@
             atualizarStatusFirebase('online', 'Nuvem sincronizada');
           }
         } else {
-          // Não existe no Firebase → cria com dados locais
           await setDoc(docRef, {
             produtos: state.produtos,
             vendas: state.vendas,
@@ -1522,10 +1508,9 @@
             _lastUpdate: Date.now()
           });
           atualizarStatusFirebase('online', 'Nuvem sincronizada');
-          toast('☁️ Firebase conectado', 'Dados iniciais enviados para a nuvem', 'cloud');
+          toast('☁️ Firebase conectado', 'Dados iniciais enviados', 'cloud');
         }
 
-        // Escuta mudanças em tempo real
         firebaseUnsubscribe = onSnapshot(docRef, (snap) => {
           if (!snap.exists()) return;
           
@@ -1533,7 +1518,6 @@
           const tsCloud = dadosCloud._lastUpdate || 0;
           const tsLocal = state._lastUpdate || 0;
           
-          // Só atualiza se a nuvem for mais recente E não foi o próprio cliente que mudou
           if (tsCloud > tsLocal + 1000) {
             state.produtos = dadosCloud.produtos || [];
             state.vendas = dadosCloud.vendas || [];
@@ -1559,7 +1543,6 @@
       }
     }
 
-    // Salva no Firebase (debounced)
     async function salvarFirebase() {
       if (!firebaseReady) return;
       
@@ -1588,7 +1571,7 @@
     }
 
     /* ==========================================================================
-       HASH E INICIALIZAÇÃO DE USUÁRIOS
+       HASH E USUÁRIOS
        ========================================================================== */
     async function gerarHash(texto) {
       const encoder = new TextEncoder();
@@ -1599,23 +1582,27 @@
     }
 
     async function inicializarUsuarios() {
-      // ⚠️ IMPORTANTE: aqui forçamos SEMPRE a atualização das permissões
-      // para garantir que o admin (Rodrigo) tenha acesso aos fornecedores
-      // mesmo se o localStorage estiver com dados antigos.
-      
       if (localStorage.getItem(SETUP_KEY) === 'ok') {
         usuarios = JSON.parse(localStorage.getItem(USUARIOS_KEY)) || {};
         
-        // ✅ Correção: garante que o admin tem TODAS as permissões
         let precisaSalvar = false;
         for (const login in usuarios) {
           const u = usuarios[login];
           
-          // Admin sempre tem todas as permissões
+          // ✅ Admin SEMPRE tem todas as permissões
           if (u.perfil === 'admin') {
             const temTodas = TODAS_PERMISSOES.every(p => u.permissoes && u.permissoes.includes(p));
             if (!temTodas) {
               u.permissoes = [...TODAS_PERMISSOES];
+              precisaSalvar = true;
+            }
+          }
+          
+          // ✅ Gerente SEMPRE tem permissões de gerente
+          if (u.perfil === 'gerente') {
+            const temTodas = PERMISSOES_GERENTE.every(p => u.permissoes && u.permissoes.includes(p));
+            if (!temTodas) {
+              u.permissoes = [...PERMISSOES_GERENTE];
               precisaSalvar = true;
             }
           }
@@ -1643,8 +1630,13 @@
         return;
       }
       
-      // Primeira vez
-      const senhasTemporarias = { 'rodrigo': 'Jackpg', 'caixa': 'caixa123', 'estoque': 'estoque123' };
+      // Primeira vez - cria todos os usuários padrão
+      const senhasTemporarias = { 
+        'rodrigo': 'Jackpg', 
+        'gerente': 'gerente123',
+        'caixa': 'caixa123', 
+        'estoque': 'estoque123' 
+      };
       usuarios = JSON.parse(JSON.stringify(USUARIOS_PADRAO));
       
       for (const login in senhasTemporarias) {
@@ -1782,11 +1774,10 @@
       const expInfo = verificarExpiracaoSenha(loginInput);
       const duracao = lembrar ? DURACAO_SESSAO_LEMBRAR : DURACAO_SESSAO_PADRAO;
       
-      // ✅ Correção: garante que admin tem todas as permissões ao fazer login
+      // Força permissões corretas baseado no perfil
       let permissoes = userData.permissoes || [];
-      if (userData.perfil === 'admin') {
-        permissoes = [...TODAS_PERMISSOES];
-      }
+      if (userData.perfil === 'admin') permissoes = [...TODAS_PERMISSOES];
+      else if (userData.perfil === 'gerente') permissoes = [...PERMISSOES_GERENTE];
       
       usuarioLogado = {
         usuario: userData.nome, login: loginInput,
@@ -1848,7 +1839,19 @@
       if (!confirm('Deseja realmente sair do sistema?')) return;
       registrarLog('logout', 'Logout', 'Sessão encerrada');
       localStorage.removeItem(AUTH_KEY);
+      
+      // ✅ Limpa TODAS as variáveis de estado
       usuarioLogado = null;
+      carrinho = [];
+      forcarOrdenacao = null;
+      pagamentoSelecionado = null;
+      sugestaoSelecionada = -1;
+      sugestoesAtuais = [];
+      ultimoCodigoLido = '';
+      ultimoTempoLeitura = 0;
+      
+      if (chartInstance) { chartInstance.destroy(); chartInstance = null; }
+      if (chartPagInstance) { chartPagInstance.destroy(); chartPagInstance = null; }
       
       document.getElementById('main-header').style.display = 'none';
       document.getElementById('main-content').style.display = 'none';
@@ -1905,12 +1908,11 @@
             usuarioLogado = null;
             toast('Sessão expirada', 'Faça login novamente', 'warning');
           } else if (usuarioLogado && usuarios[usuarioLogado.login]) {
-            // ✅ Correção: recarrega as permissões do usuário na sessão
+            // Recarrega permissões baseado no perfil
             const userData = usuarios[usuarioLogado.login];
-            if (userData.perfil === 'admin') {
-              usuarioLogado.permissoes = [...TODAS_PERMISSOES];
-              localStorage.setItem(AUTH_KEY, JSON.stringify(usuarioLogado));
-            }
+            if (userData.perfil === 'admin') usuarioLogado.permissoes = [...TODAS_PERMISSOES];
+            else if (userData.perfil === 'gerente') usuarioLogado.permissoes = [...PERMISSOES_GERENTE];
+            localStorage.setItem(AUTH_KEY, JSON.stringify(usuarioLogado));
             
             document.getElementById('login-screen').classList.add('hidden');
             document.getElementById('main-header').style.display = 'flex';
@@ -1956,7 +1958,8 @@
 
     function atualizarDatetime() {
       const opcoes = { weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' };
-      document.getElementById('datetime').textContent = new Date().toLocaleDateString('pt-BR', opcoes);
+      const el = document.getElementById('datetime');
+      if (el) el.textContent = new Date().toLocaleDateString('pt-BR', opcoes);
     }
 
     function toast(titulo, mensagem, tipo = 'success') {
@@ -1982,11 +1985,10 @@
     }
 
     function salvarDados() {
-      // Atualiza timestamp antes de salvar
       state._lastUpdate = Date.now();
       localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
       render();
-      salvarFirebase(); // Sincroniza com Firebase
+      salvarFirebase();
     }
 
     function calcularValidade(dataValidade) {
@@ -2015,6 +2017,7 @@
     function atualizarAlertaVencimento() {
       const alertEl = document.getElementById('alert-vencimento');
       const countEl = document.getElementById('alert-count-vencimento');
+      if (!alertEl || !countEl) return;
       
       const criticos = state.produtos.filter(p => {
         const v = calcularValidade(p.validade);
@@ -2041,6 +2044,7 @@
     function atualizarAlertaEstoque() {
       const alertEl = document.getElementById('alert-estoque');
       const countEl = document.getElementById('alert-count-estoque');
+      if (!alertEl || !countEl) return;
       
       const zerados = state.produtos.filter(p => p.qtd <= 0);
       const baixos = state.produtos.filter(p => p.qtd > 0 && p.qtd <= p.min);
@@ -2061,6 +2065,7 @@
     function atualizarAlertaBoleto() {
       const alertEl = document.getElementById('alert-boleto');
       const countEl = document.getElementById('alert-count-boleto');
+      if (!alertEl || !countEl) return;
       
       const abertos = state.fornecedores.filter(f => !f.pago);
       
@@ -2309,6 +2314,8 @@
     function renderSugestoes() {
       const input = document.getElementById('busca-pdv');
       const box = document.getElementById('pdv-suggestions');
+      if (!input || !box) return;
+      
       const busca = input.value.toLowerCase().trim();
       
       let filtrados = state.produtos;
@@ -2369,7 +2376,8 @@
     }
 
     function fecharSugestoes() {
-      document.getElementById('pdv-suggestions').classList.remove('show');
+      const box = document.getElementById('pdv-suggestions');
+      if (box) box.classList.remove('show');
       sugestaoSelecionada = -1;
     }
 
@@ -2429,6 +2437,7 @@
 
     function adicionarAoCarrinho(id, viaScanner = false) {
       const produto = state.produtos.find(p => p.id === id);
+      if (!produto) return;
       
       if (produto.tipo === 'peso') {
         const item = carrinho.find(c => c.id === id);
@@ -2523,6 +2532,7 @@
       const btnFinalizar = document.getElementById('btn-finalizar');
       const btnLimpar = document.getElementById('btn-limpar');
       const infoItens = document.getElementById('info-itens');
+      if (!lista) return;
       
       if (carrinho.length === 0) {
         lista.innerHTML = `
@@ -2704,7 +2714,7 @@
       });
 
       registrarLog('venda', 'Venda realizada', 
-        `${resumo.join(', ')} — Total: ${formatarMoeda(total)} (${PAGAMENTO_LABELS[formaPag]}) — Líquido: ${formatarMoeda(liquidoTotal)}`);
+        `${resumo.join(', ')} — Total: ${formatarMoeda(total)} (${PAGAMENTO_LABELS[formaPag]})`);
       
       carrinho = [];
       pagamentoSelecionado = null;
@@ -2826,7 +2836,9 @@
 
     function renderEstoque() {
       const tb = document.getElementById('tb-estoque');
-      const busca = document.getElementById('busca-estoque').value.toLowerCase();
+      if (!tb) return;
+      
+      const busca = (document.getElementById('busca-estoque').value || '').toLowerCase();
       const podeEditar = temPermissao('editar');
       const podeExcluir = temPermissao('excluir');
       
@@ -2943,7 +2955,7 @@
           pago: false,
           criadoEm: new Date().toISOString()
         });
-        registrarLog('cadastro', 'Boleto cadastrado', `${nome} — ${formatarMoeda(valor)} — Vence: ${formatarDataBR(vencimento)}`);
+        registrarLog('cadastro', 'Boleto cadastrado', `${nome} — ${formatarMoeda(valor)}`);
         toast('Boleto cadastrado', `${nome} • ${formatarMoeda(valor)}`, 'success');
       }
 
@@ -3018,7 +3030,8 @@
       const lista = document.getElementById('lista-boletos');
       if (!lista) return;
       
-      const busca = (document.getElementById('busca-fornecedor').value || '').toLowerCase();
+      const buscaEl = document.getElementById('busca-fornecedor');
+      const busca = buscaEl ? (buscaEl.value || '').toLowerCase() : '';
       
       atualizarKPIsFornecedores();
       
@@ -3067,7 +3080,6 @@
         abertos.forEach(f => {
           const venc = calcularVencimentoBoleto(f.vencimento);
           const classeCard = venc.status;
-          const classeBadge = venc.status;
           
           html += `
             <div class="boleto-card ${classeCard}">
@@ -3085,7 +3097,7 @@
                     Vencimento: <strong>${formatarDataBR(f.vencimento)}</strong>
                   </div>
                 </div>
-                <div class="boleto-dias-badge ${classeBadge}">
+                <div class="boleto-dias-badge ${classeCard}">
                   <i data-lucide="${venc.icone}" style="width: 14px; height: 14px;"></i>
                   ${venc.texto}
                 </div>
@@ -3181,8 +3193,12 @@
        GRÁFICOS
        ========================================================================== */
     function atualizarGraficos() {
-      const tempo = document.getElementById('filtro-tempo').value;
-      const prodFiltro = document.getElementById('filtro-produto').value;
+      const el1 = document.getElementById('filtro-tempo');
+      const el2 = document.getElementById('filtro-produto');
+      if (!el1 || !el2) return;
+      
+      const tempo = el1.value;
+      const prodFiltro = el2.value;
 
       let vendas = state.vendas;
       if (prodFiltro !== 'todos') vendas = vendas.filter(v => v.produtoId == prodFiltro);
@@ -3233,7 +3249,8 @@
     }
 
     function obterVendasFiltradas() {
-      const periodo = document.getElementById('filtro-pag-periodo').value;
+      const el = document.getElementById('filtro-pag-periodo');
+      const periodo = el ? el.value : 'mes';
       const agora = new Date();
       
       if (periodo === 'hoje') {
@@ -3329,7 +3346,9 @@
       const data = [valores.debito, valores.credito, valores.pix, valores.dinheiro];
       const colors = ['#0891b2', '#7c3aed', '#059669', '#d97706'];
       
-      const ctx = document.getElementById('graficoPagamentos').getContext('2d');
+      const canvas = document.getElementById('graficoPagamentos');
+      if (!canvas) return;
+      const ctx = canvas.getContext('2d');
       if (chartPagInstance) chartPagInstance.destroy();
       
       const total = data.reduce((a, b) => a + b, 0);
@@ -3401,10 +3420,12 @@
       if (!temPermissao('usuarios')) return;
       
       const lista = document.getElementById('lista-usuarios');
+      if (!lista) return;
       lista.innerHTML = '';
       
       const coresPerfil = {
         admin: 'linear-gradient(135deg, #7c3aed, #4f46e5)',
+        gerente: 'linear-gradient(135deg, #0891b2, #0ea5e9)',
         caixa: 'linear-gradient(135deg, #0891b2, #0ea5e9)',
         estoque: 'linear-gradient(135deg, #d97706, #f59e0b)'
       };
@@ -3429,7 +3450,7 @@
               <h4>${u.nome}</h4>
               <p>
                 <span><i data-lucide="at-sign" style="width: 12px; height: 12px; display: inline; vertical-align: middle;"></i> ${u.login}</span>
-                <span class="badge badge-${u.perfil === 'admin' ? 'purple' : u.perfil === 'caixa' ? 'blue' : 'orange'}">${u.perfilLabel}</span>
+                <span class="badge badge-${u.perfil === 'admin' ? 'purple' : u.perfil === 'gerente' ? 'blue' : u.perfil === 'caixa' ? 'blue' : 'orange'}">${u.perfilLabel}</span>
                 ${statusSenha}
               </p>
             </div>
@@ -3575,8 +3596,12 @@
       if (!temPermissao('auditoria')) return;
       
       const lista = document.getElementById('lista-logs');
-      const filtroTipo = document.getElementById('filtro-log-tipo').value;
-      const busca = document.getElementById('filtro-log-busca').value.toLowerCase();
+      if (!lista) return;
+      
+      const filtroTipoEl = document.getElementById('filtro-log-tipo');
+      const buscaEl = document.getElementById('filtro-log-busca');
+      const filtroTipo = filtroTipoEl ? filtroTipoEl.value : 'todos';
+      const busca = buscaEl ? buscaEl.value.toLowerCase() : '';
       
       let filtrados = [...logs].reverse();
       
@@ -3631,16 +3656,19 @@
       lucide.createIcons();
     }
 
+    /* ==========================================================================
+       RENDER PRINCIPAL
+       ========================================================================== */
     function render() {
       if (!usuarioLogado) return;
       
-      renderCarrinho();
-      renderEstoque();
-      renderBoletos();
-      atualizarAlertaVencimento();
-      atualizarAlertaEstoque();
-      atualizarAlertaBoleto();
-      atualizarPeriodosVendas();
+      try { renderCarrinho(); } catch (e) { console.error('Erro renderCarrinho:', e); }
+      try { renderEstoque(); } catch (e) { console.error('Erro renderEstoque:', e); }
+      try { renderBoletos(); } catch (e) { console.error('Erro renderBoletos:', e); }
+      try { atualizarAlertaVencimento(); } catch (e) { console.error('Erro alertVenc:', e); }
+      try { atualizarAlertaEstoque(); } catch (e) { console.error('Erro alertEstoque:', e); }
+      try { atualizarAlertaBoleto(); } catch (e) { console.error('Erro alertBoleto:', e); }
+      try { atualizarPeriodosVendas(); } catch (e) { console.error('Erro periodos:', e); }
       
       const selFiltro = document.getElementById('filtro-produto');
       if (selFiltro) {
@@ -3709,13 +3737,11 @@
         else setTimeout(() => document.getElementById('login-usuario').focus(), 200);
       }
       
-      // Inicializa Firebase depois de 1s para dar tempo do SDK carregar
       setTimeout(() => {
         if (window.FirebaseDB && window.FirebaseDB.ready) {
           inicializarFirebase();
         } else {
           window.addEventListener('firebase-ready', () => inicializarFirebase());
-          // Fallback: se em 3s não carregar, fica offline
           setTimeout(() => {
             if (!firebaseReady) atualizarStatusFirebase('offline', 'Modo Local');
           }, 3000);
